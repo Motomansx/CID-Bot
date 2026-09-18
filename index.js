@@ -53,6 +53,7 @@ client.once('ready', async () => {
         console.error("Database initialization error:", err);
     }
 
+    // Register Slash Commands with Discord API
     const commands = [
         new SlashCommandBuilder()
             .setName('cidpanel')
@@ -69,8 +70,12 @@ client.once('ready', async () => {
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
     try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('Successfully registered application slash commands.');
+        console.log('Started refreshing application (/) commands.');
+        await rest.put(
+            Routes.applicationCommands(client.user.id),
+            { body: commands },
+        );
+        console.log('Successfully reloaded application (/) commands.');
     } catch (error) {
         console.error(error);
     }
@@ -185,7 +190,6 @@ client.on('interactionCreate', async interaction => {
             .setDescription(`**Hey ${interaction.user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.**\n\nPlease state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo). Avoid downloadable or streamable clip links.`)
             .setColor(0x8B0000);
 
-        // Control buttons inside ticket: Claim, Close, Close Without Reason
         const controlRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId('claim_ticket_btn')
@@ -212,10 +216,8 @@ client.on('interactionCreate', async interaction => {
         if (customId === 'claim_ticket_btn') {
             await interaction.deferReply();
             
-            // Update DB with assigned agent
             await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [user.id, channel.id]);
 
-            // Update channel permissions to include the claiming user
             let dbCheck = await pool.query(`SELECT complainant_id FROM cid_records WHERE channel_id = $1`, [channel.id]);
             if (dbCheck.rows.length > 0) {
                 const complainantId = dbCheck.rows[0].complainant_id;
