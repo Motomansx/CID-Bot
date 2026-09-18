@@ -124,19 +124,21 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (commandName === 'assign') {
-            await interaction.deferReply();
+            await interaction.deferReply({ ephemeral: true });
 
             const dbCheck = await pool.query(`SELECT * FROM cid_records WHERE channel_id = $1`, [channel.id]);
             if (dbCheck.rows.length === 0) {
-                return interaction.editReply({ content: "This command can only be used inside an active CID case channel." });
+                return interaction.editReply({ content: "❌ This command can only be used inside an active CID case channel." });
             }
 
             const targetAgent = interaction.options.getUser('agent');
             const caseData = dbCheck.rows[0];
+            const complainantId = String(caseData.complainant_id);
 
+            // Construct clean permission overwrites
             let overwrites = [
                 { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                { id: caseData.complainant_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                { id: complainantId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
                 { id: targetAgent.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
             ];
 
@@ -147,10 +149,14 @@ client.on('interactionCreate', async interaction => {
                 });
             });
 
-            await channel.edit({ permissionOverwrites: overwrites });
-            await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [targetAgent.id, channel.id]);
-
-            await interaction.editReply({ content: `Successfully assigned ${targetAgent} to this case and updated channel permissions.` });
+            try {
+                await channel.edit({ permissionOverwrites: overwrites });
+                await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [targetAgent.id, channel.id]);
+                await interaction.editReply({ content: `✅ Successfully assigned ${targetAgent} to this case and updated channel permissions.` });
+            } catch (err) {
+                console.error("Assign Error:", err);
+                await interaction.editReply({ content: "❌ Failed to update channel permissions. Make sure the bot has 'Manage Channels' permissions." });
+            }
         }
     }
 
@@ -214,25 +220,34 @@ client.on('interactionCreate', async interaction => {
         const { customId, channel, user, guild } = interaction;
 
         if (customId === 'claim_ticket_btn') {
-            await interaction.deferReply();
-            
-            await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [user.id, channel.id]);
+            await interaction.deferReply({ ephemeral: true });
 
-            let dbCheck = await pool.query(`SELECT complainant_id FROM cid_records WHERE channel_id = $1`, [channel.id]);
-            if (dbCheck.rows.length > 0) {
-                const complainantId = dbCheck.rows[0].complainant_id;
-                let overwrites = [
-                    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: complainantId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                    { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-                ];
-                PERMANENT_CASE_ROLES.forEach(roleId => {
-                    overwrites.push({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
-                });
-                await channel.edit({ permissionOverwrites: overwrites });
+            const dbCheck = await pool.query(`SELECT * FROM cid_records WHERE channel_id = $1`, [channel.id]);
+            if (dbCheck.rows.length === 0) {
+                return interaction.editReply({ content: "❌ This channel is not registered as an active CID case." });
             }
 
-            await interaction.editReply({ content: `🔒 Ticket successfully claimed by ${user}.` });
+            const caseData = dbCheck.rows[0];
+            const complainantId = String(caseData.complainant_id);
+
+            let overwrites = [
+                { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                { id: complainantId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+            ];
+
+            PERMANENT_CASE_ROLES.forEach(roleId => {
+                overwrites.push({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+            });
+
+            try {
+                await channel.edit({ permissionOverwrites: overwrites });
+                await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [user.id, channel.id]);
+                await interaction.editReply({ content: `🔒 Ticket successfully claimed by ${user}.` });
+            } catch (err) {
+                console.error("Claim Error:", err);
+                await interaction.editReply({ content: "❌ Failed to claim ticket. Ensure the bot has 'Manage Channels' permissions." });
+            }
         }
 
         if (customId === 'close_ticket_btn') {
