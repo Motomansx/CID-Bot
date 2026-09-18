@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ChannelType, PermissionFlagsBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ChannelType, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { Pool } = require('pg');
 require('dotenv').config();
 
@@ -92,7 +92,7 @@ client.once('ready', async () => {
     }
 });
 
-// Handle Slash Commands & Interactive Buttons
+// Handle Slash Commands, Dropdowns, Modals & Buttons
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand()) {
         const { commandName, member, guild, channel } = interaction;
@@ -173,14 +173,12 @@ client.on('interactionCreate', async interaction => {
             const caseData = dbCheck.rows[0];
             const complainantId = String(caseData.complainant_id);
 
-            // Create role formatted as REDACTED#[ID]
             let caseRole = await guild.roles.create({
                 name: `REDACTED#${caseData.case_id}`,
                 color: 0x8B0000,
                 reason: `Assigned investigator role for Case #${caseData.case_id}`
             });
 
-            // Assign the role to the target agent member object
             const targetMember = await guild.members.fetch(targetAgent.id).catch(() => null);
             if (targetMember) {
                 await targetMember.roles.add(caseRole).catch(() => {});
@@ -213,59 +211,57 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // Handle Ticket Dropdown Creation
+    // Handle Ticket Dropdown Creation / Modal Trigger
     if (interaction.isStringSelectMenu() && interaction.customId === 'cid_ticket_select') {
         const ticketType = interaction.values[0];
-        const guild = interaction.guild;
-        
-        let category = guild.channels.cache.find(c => c.name === "CID CASES" && c.type === ChannelType.GuildCategory);
-        if (!category) {
-            category = await guild.channels.create({ name: "CID CASES", type: ChannelType.GuildCategory });
+
+        // If they select Warrant Request, pop up a specialized Modal form
+        if (ticketType === 'ticket_warrant') {
+            const modal = new ModalBuilder()
+                .setCustomId('warrant_modal')
+                .setTitle('Warrant Request Form');
+
+            const robloxUserField = new TextInputBuilder()
+                .setCustomId('warrant_roblox_user')
+                .setLabel('Roblox Username')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Enter suspect exact Roblox username')
+                .setRequired(true);
+
+            const articlesField = new TextInputBuilder()
+                .setCustomId('warrant_articles')
+                .setLabel('Articles Broken / Reason')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('Specify what rules or articles were violated')
+                .setRequired(true);
+
+            const evidenceField = new TextInputBuilder()
+                .setCustomId('warrant_evidence')
+                .setLabel('Evidence (Link or Proof)')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('Paste YouTube, Medal, Gyazo, or image link')
+                .setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(robloxUserField),
+                new ActionRowBuilder().addComponents(articlesField),
+                new ActionRowBuilder().addComponents(evidenceField)
+            );
+
+            return await interaction.showModal(modal);
         }
 
-        let initialOverwrites = [
-            { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: interaction.user.id, type: 1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-        ];
-        PERMANENT_CASE_ROLES.forEach(roleId => {
-            initialOverwrites.push({ id: roleId, type: 0, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
-        });
+        // Standard Ticket Creation for other categories
+        await createTicketChannel(interaction, ticketType, 'Pending Identification', null, null);
+    }
 
-        const channel = await guild.channels.create({
-            name: `${interaction.user.username}-${ticketType.replace('ticket_', '')}`,
-            type: ChannelType.GuildText,
-            parent: category.id,
-            permissionOverwrites: initialOverwrites
-        });
+    // Handle Modal Submissions (specifically Warrant Request)
+    if (interaction.isModalSubmit() && interaction.customId === 'warrant_modal') {
+        const robloxUser = interaction.fields.getTextInputValue('warrant_roblox_user');
+        const articles = interaction.fields.getTextInputValue('warrant_articles');
+        const evidence = interaction.fields.getTextInputValue('warrant_evidence');
 
-        const insertRes = await pool.query(
-            `INSERT INTO cid_records (channel_id, suspect_name, ticket_type, complainant_id) VALUES ($1, $2, $3, $4) RETURNING case_id`,
-            [channel.id, 'Pending Identification', ticketType, interaction.user.id]
-        );
-        const caseId = insertRes.rows[0].case_id;
-
-        const ticketEmbed = new EmbedBuilder()
-            .setTitle(`CID Case File #${caseId} —${ticketType.toUpperCase()}`)
-            .setDescription(`**Hey ${interaction.user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.**\n\nPlease state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo). Avoid downloadable or streamable clip links.`)
-            .setColor(0x8B0000);
-
-        const controlRow = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('claim_ticket_btn')
-                .setLabel('Claim Ticket')
-                .setStyle(ButtonStyle.Primary),
-            new ButtonBuilder()
-                .setCustomId('close_ticket_btn')
-                .setLabel('Close Ticket')
-                .setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder()
-                .setCustomId('close_noreason_btn')
-                .setLabel('Close Without Reason')
-                .setStyle(ButtonStyle.Danger)
-        );
-
-        await channel.send({ embeds: [ticketEmbed], components: [controlRow] });
-        await interaction.reply({ content: `Your ticket has been created: ${channel}`, ephemeral: true });
+        await createTicketChannel(interaction, 'ticket_warrant', robloxUser, articles, evidence);
     }
 
     // Handle Ticket Action Buttons (Claim, Close, Close Without Reason)
@@ -283,14 +279,12 @@ client.on('interactionCreate', async interaction => {
             const caseData = dbCheck.rows[0];
             const complainantId = String(caseData.complainant_id);
 
-            // Create role formatted as REDACTED#[ID]
             let caseRole = await guild.roles.create({
                 name: `REDACTED#${caseData.case_id}`,
                 color: 0x8B0000,
                 reason: `Claimed investigator role for Case #${caseData.case_id}`
             });
 
-            // Assign role to the claiming user
             const claimingMember = await guild.members.fetch(user.id).catch(() => null);
             if (claimingMember) {
                 await claimingMember.roles.add(caseRole).catch(() => {});
@@ -321,7 +315,6 @@ client.on('interactionCreate', async interaction => {
         if (customId === 'close_ticket_btn' || customId === 'close_noreason_btn') {
             await interaction.reply({ content: "Closing case file and archiving...", ephemeral: true });
             
-            // Cleanup the specific REDACTED#[ID] role matching this case ID
             try {
                 const dbCheck = await pool.query(`SELECT case_id FROM cid_records WHERE channel_id = $1`, [channel.id]);
                 if (dbCheck.rows.length > 0) {
@@ -339,6 +332,75 @@ client.on('interactionCreate', async interaction => {
         }
     }
 });
+
+// Helper function to generate ticket channels and save records
+async function createTicketChannel(interaction, ticketType, suspectName, charges, evidence) {
+    if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply({ ephemeral: true });
+    }
+
+    const guild = interaction.guild;
+    const user = interaction.user;
+
+    let category = guild.channels.cache.find(c => c.name === "CID CASES" && c.type === ChannelType.GuildCategory);
+    if (!category) {
+        category = await guild.channels.create({ name: "CID CASES", type: ChannelType.GuildCategory });
+    }
+
+    let initialOverwrites = [
+        { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: user.id, type: 1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+    ];
+    PERMANENT_CASE_ROLES.forEach(roleId => {
+        initialOverwrites.push({ id: roleId, type: 0, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+    });
+
+    const channel = await guild.channels.create({
+        name: `${user.username}-${ticketType.replace('ticket_', '')}`,
+        type: ChannelType.GuildText,
+        parent: category.id,
+        permissionOverwrites: initialOverwrites
+    });
+
+    const insertRes = await pool.query(
+        `INSERT INTO cid_records (channel_id, suspect_name, ticket_type, complainant_id, charges) VALUES ($1, $2, $3, $4, $5) RETURNING case_id`,
+        [channel.id, suspectName, ticketType, user.id, charges || 'Pending Investigation']
+    );
+    const caseId = insertRes.rows[0].case_id;
+
+    const ticketEmbed = new EmbedBuilder()
+        .setTitle(`CID Case File #${caseId} — ${ticketType.toUpperCase()}`)
+        .setColor(0x8B0000);
+
+    if (ticketType === 'ticket_warrant') {
+        ticketEmbed.setDescription(`**Warrant Request Submitted by ${user}**`)
+            .addFields(
+                { name: "Roblox User", value: suspectName, inline: false },
+                { name: "Articles Broken / Reason", value: charges || 'N/A', inline: false },
+                { name: "Evidence / Proof", value: evidence || 'N/A', inline: false }
+            );
+    } else {
+        ticketEmbed.setDescription(`**Hey ${user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.**\n\nPlease state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo).`);
+    }
+
+    const controlRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('claim_ticket_btn')
+            .setLabel('Claim Ticket')
+            .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+            .setCustomId('close_ticket_btn')
+            .setLabel('Close Ticket')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId('close_noreason_btn')
+            .setLabel('Close Without Reason')
+            .setStyle(ButtonStyle.Danger)
+    );
+
+    await channel.send({ embeds: [ticketEmbed], components: [controlRow] });
+    await interaction.editReply({ content: `Your ticket has been created: ${channel}` });
+}
 
 // Database Background Check Command (!background <username>)
 client.on('messageCreate', async message => {
