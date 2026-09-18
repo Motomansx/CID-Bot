@@ -173,10 +173,23 @@ client.on('interactionCreate', async interaction => {
             const caseData = dbCheck.rows[0];
             const complainantId = String(caseData.complainant_id);
 
+            // Create role formatted as [REDACTED] Case #[ID]
+            let caseRole = await guild.roles.create({
+                name: `[REDACTED] Case #${caseData.case_id}`,
+                color: 0x8B0000,
+                reason: `Assigned investigator role for Case #${caseData.case_id}`
+            });
+
+            // Assign the role to the target agent member object
+            const targetMember = await guild.members.fetch(targetAgent.id).catch(() => null);
+            if (targetMember) {
+                await targetMember.roles.add(caseRole).catch(() => {});
+            }
+
             let overwrites = [
                 { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: complainantId, type: 1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                { id: targetAgent.id, type: 1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                { id: caseRole.id, type: 0, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
             ];
 
             PERMANENT_CASE_ROLES.forEach(roleId => {
@@ -191,7 +204,7 @@ client.on('interactionCreate', async interaction => {
                 await channel.permissionOverwrites.set(overwrites);
                 await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [targetAgent.id, channel.id]);
                 
-                await interaction.editReply({ content: `✅ Successfully assigned ${targetAgent} to this case.` });
+                await interaction.editReply({ content: `✅ Successfully assigned ${targetAgent} and created redacted case role.` });
                 await channel.send(`🔔 Case Update: <@${complainantId}>, <@${targetAgent.id}> has been assigned to your case.`);
             } catch (err) {
                 console.error("Assign Error:", err);
@@ -270,10 +283,23 @@ client.on('interactionCreate', async interaction => {
             const caseData = dbCheck.rows[0];
             const complainantId = String(caseData.complainant_id);
 
+            // Create role formatted as [REDACTED] Case #[ID]
+            let caseRole = await guild.roles.create({
+                name: `[REDACTED] Case #${caseData.case_id}`,
+                color: 0x8B0000,
+                reason: `Claimed investigator role for Case #${caseData.case_id}`
+            });
+
+            // Assign role to the claiming user
+            const claimingMember = await guild.members.fetch(user.id).catch(() => null);
+            if (claimingMember) {
+                await claimingMember.roles.add(caseRole).catch(() => {});
+            }
+
             let overwrites = [
                 { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: complainantId, type: 1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                { id: user.id, type: 1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                { id: caseRole.id, type: 0, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
             ];
 
             PERMANENT_CASE_ROLES.forEach(roleId => {
@@ -292,16 +318,20 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        if (customId === 'close_ticket_btn') {
+        if (customId === 'close_ticket_btn' || customId === 'close_noreason_btn') {
             await interaction.reply({ content: "Closing case file and archiving...", ephemeral: true });
-            await pool.query(`DELETE FROM cid_records WHERE channel_id = $1`, [channel.id]);
-            setTimeout(async () => {
-                await channel.delete().catch(() => {});
-            }, 2000);
-        }
+            
+            // Cleanup the specific redacted role matching this case ID
+            try {
+                const dbCheck = await pool.query(`SELECT case_id FROM cid_records WHERE channel_id = $1`, [channel.id]);
+                if (dbCheck.rows.length > 0) {
+                    const roleToDelete = guild.roles.cache.find(r => r.name === `[REDACTED] Case #${dbCheck.rows[0].case_id}`);
+                    if (roleToDelete) await roleToDelete.delete().catch(() => {});
+                }
+            } catch (e) {
+                console.error("Role cleanup error:", e);
+            }
 
-        if (customId === 'close_noreason_btn') {
-            await interaction.reply({ content: "Closing ticket without reason...", ephemeral: true });
             await pool.query(`DELETE FROM cid_records WHERE channel_id = $1`, [channel.id]);
             setTimeout(async () => {
                 await channel.delete().catch(() => {});
