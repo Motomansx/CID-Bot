@@ -173,9 +173,9 @@ client.on('interactionCreate', async interaction => {
             const caseData = dbCheck.rows[0];
             const complainantId = String(caseData.complainant_id);
 
-            // Create role formatted as [REDACTED] Case #[ID]
+            // Create role formatted as REDACTED#[ID]
             let caseRole = await guild.roles.create({
-                name: `[REDACTED] Case #${caseData.case_id}`,
+                name: `REDACTED#${caseData.case_id}`,
                 color: 0x8B0000,
                 reason: `Assigned investigator role for Case #${caseData.case_id}`
             });
@@ -204,7 +204,7 @@ client.on('interactionCreate', async interaction => {
                 await channel.permissionOverwrites.set(overwrites);
                 await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [targetAgent.id, channel.id]);
                 
-                await interaction.editReply({ content: `✅ Successfully assigned ${targetAgent} and created redacted case role.` });
+                await interaction.editReply({ content: `✅ Successfully assigned ${targetAgent} and created role \`REDACTED#${caseData.case_id}\`.` });
                 await channel.send(`🔔 Case Update: <@${complainantId}>, <@${targetAgent.id}> has been assigned to your case.`);
             } catch (err) {
                 console.error("Assign Error:", err);
@@ -283,9 +283,9 @@ client.on('interactionCreate', async interaction => {
             const caseData = dbCheck.rows[0];
             const complainantId = String(caseData.complainant_id);
 
-            // Create role formatted as [REDACTED] Case #[ID]
+            // Create role formatted as REDACTED#[ID]
             let caseRole = await guild.roles.create({
-                name: `[REDACTED] Case #${caseData.case_id}`,
+                name: `REDACTED#${caseData.case_id}`,
                 color: 0x8B0000,
                 reason: `Claimed investigator role for Case #${caseData.case_id}`
             });
@@ -321,11 +321,11 @@ client.on('interactionCreate', async interaction => {
         if (customId === 'close_ticket_btn' || customId === 'close_noreason_btn') {
             await interaction.reply({ content: "Closing case file and archiving...", ephemeral: true });
             
-            // Cleanup the specific redacted role matching this case ID
+            // Cleanup the specific REDACTED#[ID] role matching this case ID
             try {
                 const dbCheck = await pool.query(`SELECT case_id FROM cid_records WHERE channel_id = $1`, [channel.id]);
                 if (dbCheck.rows.length > 0) {
-                    const roleToDelete = guild.roles.cache.find(r => r.name === `[REDACTED] Case #${dbCheck.rows[0].case_id}`);
+                    const roleToDelete = guild.roles.cache.find(r => r.name === `REDACTED#${dbCheck.rows[0].case_id}`);
                     if (roleToDelete) await roleToDelete.delete().catch(() => {});
                 }
             } catch (e) {
