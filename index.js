@@ -15,6 +15,11 @@ const client = new Client({
     ]
 });
 
+// Channel IDs provided
+const WARRANT_SUBMIT_CHANNEL = "1550641377078026320";
+const WARRANT_QUEUE_CHANNEL = "1550640875560902766";
+const WARRANT_LOG_CHANNEL = "1550640829381476483";
+
 // Allowed Role IDs that can deploy the panel
 const AUTHORIZED_DEPLOY_ROLES = [
     "1527133365658980404",
@@ -76,7 +81,10 @@ client.once('ready', async () => {
             ),
         new SlashCommandBuilder()
             .setName('cidchannelpurge')
-            .setDescription('Deletes all current active CID case channels from database records')
+            .setDescription('Deletes all current active CID case channels from database records'),
+        new SlashCommandBuilder()
+            .setName('warrantrequest')
+            .setDescription('Submit an official warrant request form')
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
@@ -112,7 +120,6 @@ client.on('interactionCreate', async interaction => {
                     { name: "General Report", value: "To report individuals ranked E1-E7 / O1-O6." },
                     { name: "Senior Leadership Report", value: "To report individuals ranked E8+ / O7+." },
                     { name: "Report CID Personnel", value: "To report a member of CID Personnel." },
-                    { name: "Warrant Request", value: "To request a search or arrest warrant." },
                     { name: "Background Check Request", value: "Request a background history check." }
                 )
                 .setFooter({ text: "Signed, COL. Motomansx | Deputy Director Of Criminal Investigations" });
@@ -125,7 +132,6 @@ client.on('interactionCreate', async interaction => {
                     { label: 'General Report (E1-E7 / O1-O6)', value: 'ticket_general', description: 'Report lower/mid ranks' },
                     { label: 'Senior Leadership Report (E8+ / O7+)', value: 'ticket_senior', description: 'Report high ranks' },
                     { label: 'Report CID Personnel', value: 'ticket_cid', description: 'Report internal CID staff' },
-                    { label: 'Warrant Request', value: 'ticket_warrant', description: 'Request an official warrant' },
                     { label: 'Background Check Request', value: 'ticket_background', description: 'Run a background check' }
                 ]);
 
@@ -159,6 +165,45 @@ client.on('interactionCreate', async interaction => {
                 console.error("Purge Error:", err);
                 await interaction.editReply({ content: `❌ An error occurred during the purge: \`${err.message}\`` });
             }
+        }
+
+        if (commandName === 'warrantrequest') {
+            if (channel.id !== WARRANT_SUBMIT_CHANNEL) {
+                return interaction.reply({ content: `❌ Warrant requests can only be submitted in <#${WARRANT_SUBMIT_CHANNEL}>.`, ephemeral: true });
+            }
+
+            const modal = new ModalBuilder()
+                .setCustomId('warrant_modal')
+                .setTitle('Warrant Request Form');
+
+            const robloxUserField = new TextInputBuilder()
+                .setCustomId('warrant_roblox_user')
+                .setLabel('Roblox Username')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Enter suspect exact Roblox username')
+                .setRequired(true);
+
+            const articlesField = new TextInputBuilder()
+                .setCustomId('warrant_articles')
+                .setLabel('Articles Broken / Reason')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('Specify what rules or articles were violated')
+                .setRequired(true);
+
+            const evidenceField = new TextInputBuilder()
+                .setCustomId('warrant_evidence')
+                .setLabel('Evidence (Link or Proof)')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('Paste YouTube, Medal, Gyazo, or image link')
+                .setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(robloxUserField),
+                new ActionRowBuilder().addComponents(articlesField),
+                new ActionRowBuilder().addComponents(evidenceField)
+            );
+
+            return await interaction.showModal(modal);
         }
 
         if (commandName === 'assign') {
@@ -211,62 +256,81 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // Handle Ticket Dropdown Creation / Modal Trigger
+    // Handle Ticket Dropdown Creation
     if (interaction.isStringSelectMenu() && interaction.customId === 'cid_ticket_select') {
         const ticketType = interaction.values[0];
-
-        // If they select Warrant Request, pop up a specialized Modal form
-        if (ticketType === 'ticket_warrant') {
-            const modal = new ModalBuilder()
-                .setCustomId('warrant_modal')
-                .setTitle('Warrant Request Form');
-
-            const robloxUserField = new TextInputBuilder()
-                .setCustomId('warrant_roblox_user')
-                .setLabel('Roblox Username')
-                .setStyle(TextInputStyle.Short)
-                .setPlaceholder('Enter suspect exact Roblox username')
-                .setRequired(true);
-
-            const articlesField = new TextInputBuilder()
-                .setCustomId('warrant_articles')
-                .setLabel('Articles Broken / Reason')
-                .setStyle(TextInputStyle.Paragraph)
-                .setPlaceholder('Specify what rules or articles were violated')
-                .setRequired(true);
-
-            const evidenceField = new TextInputBuilder()
-                .setCustomId('warrant_evidence')
-                .setLabel('Evidence (Link or Proof)')
-                .setStyle(TextInputStyle.Paragraph)
-                .setPlaceholder('Paste YouTube, Medal, Gyazo, or image link')
-                .setRequired(true);
-
-            modal.addComponents(
-                new ActionRowBuilder().addComponents(robloxUserField),
-                new ActionRowBuilder().addComponents(articlesField),
-                new ActionRowBuilder().addComponents(evidenceField)
-            );
-
-            return await interaction.showModal(modal);
-        }
-
-        // Standard Ticket Creation for other categories
         await createTicketChannel(interaction, ticketType, 'Pending Identification', null, null);
     }
 
     // Handle Modal Submissions (specifically Warrant Request)
     if (interaction.isModalSubmit() && interaction.customId === 'warrant_modal') {
+        await interaction.deferReply({ ephemeral: true });
+
         const robloxUser = interaction.fields.getTextInputValue('warrant_roblox_user');
         const articles = interaction.fields.getTextInputValue('warrant_articles');
         const evidence = interaction.fields.getTextInputValue('warrant_evidence');
+        const guild = interaction.guild;
+        const user = interaction.user;
 
-        await createTicketChannel(interaction, 'ticket_warrant', robloxUser, articles, evidence);
+        // 1. Send submission confirmation to user
+        await interaction.editReply({ content: "✅ Your warrant request has been submitted successfully for review!" });
+
+        // 2. Post to Review Queue Channel (1550640875560902766)
+        const queueChannel = guild.channels.cache.get(WARRANT_QUEUE_CHANNEL);
+        if (queueChannel) {
+            const queueEmbed = new EmbedBuilder()
+                .setTitle(`🚨 New Warrant Request`)
+                .setColor(0x8B0000)
+                .addFields(
+                    { name: "Requested By", value: `${user} (${user.tag})`, inline: false },
+                    { name: "Roblox User", value: robloxUser, inline: false },
+                    { name: "Articles Broken / Reason", value: articles, inline: false },
+                    { name: "Evidence / Proof", value: evidence, inline: false }
+                )
+                .setTimestamp();
+
+            const actionRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('warrant_accept').setLabel('Accept Warrant').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('warrant_deny').setLabel('Deny Warrant').setStyle(ButtonStyle.Danger)
+            );
+
+            await queueChannel.send({ embeds: [queueEmbed], components: [actionRow] });
+        }
+
+        // 3. Post to Audit Log Channel (1550640829381476483)
+        const logChannel = guild.channels.cache.get(WARRANT_LOG_CHANNEL);
+        if (logChannel) {
+            const logEmbed = new EmbedBuilder()
+                .setTitle(`📋 Warrant Request Audit Log`)
+                .setColor(0xFFA500)
+                .addFields(
+                    { name: "User", value: `${user} (\`${user.id}\`)`, inline: true },
+                    { name: "Suspect", value: robloxUser, inline: true },
+                    { name: "Timestamp", value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                )
+                .setTimestamp();
+
+            await logChannel.send({ embeds: [logEmbed] });
+        }
     }
 
-    // Handle Ticket Action Buttons (Claim, Close, Close Without Reason)
+    // Handle Ticket Action & Warrant Review Buttons
     if (interaction.isButton()) {
-        const { customId, channel, user, guild } = interaction;
+        const { customId, channel, user, guild, message } = interaction;
+
+        if (customId === 'warrant_accept' || customId === 'warrant_deny') {
+            await interaction.deferUpdate();
+            const statusText = customId === 'warrant_accept' ? '✅ **ACCEPTED**' : '❌ **DENIED**';
+            const color = customId === 'warrant_accept' ? 0x00FF00 : 0xFF0000;
+
+            const oldEmbed = message.embeds[0];
+            const updatedEmbed = EmbedBuilder.from(oldEmbed)
+                .setColor(color)
+                .addFields({ name: "Review Status", value: `${statusText} by${user}`, inline: false });
+
+            await message.edit({ embeds: [updatedEmbed], components: [] });
+            return;
+        }
 
         if (customId === 'claim_ticket_btn') {
             await interaction.deferReply({ ephemeral: true });
@@ -333,7 +397,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// Helper function to generate ticket channels and save records
+// Helper function to generate standard ticket channels and save records
 async function createTicketChannel(interaction, ticketType, suspectName, charges, evidence) {
     if (!interaction.deferred && !interaction.replied) {
         await interaction.deferReply({ ephemeral: true });
@@ -370,18 +434,8 @@ async function createTicketChannel(interaction, ticketType, suspectName, charges
 
     const ticketEmbed = new EmbedBuilder()
         .setTitle(`CID Case File #${caseId} — ${ticketType.toUpperCase()}`)
+        .setDescription(`**Hey ${user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.**\n\nPlease state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo).`)
         .setColor(0x8B0000);
-
-    if (ticketType === 'ticket_warrant') {
-        ticketEmbed.setDescription(`**Warrant Request Submitted by ${user}**`)
-            .addFields(
-                { name: "Roblox User", value: suspectName, inline: false },
-                { name: "Articles Broken / Reason", value: charges || 'N/A', inline: false },
-                { name: "Evidence / Proof", value: evidence || 'N/A', inline: false }
-            );
-    } else {
-        ticketEmbed.setDescription(`**Hey ${user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.**\n\nPlease state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo).`);
-    }
 
     const controlRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -404,6 +458,11 @@ async function createTicketChannel(interaction, ticketType, suspectName, charges
 
 // Database Background Check Command (!background <username>)
 client.on('messageCreate', async message => {
+    // Auto-delete message if someone runs /warrantrequest as text message in the submit channel
+    if (message.content.startsWith('/warrantrequest') && message.channel.id === WARRANT_SUBMIT_CHANNEL) {
+        await message.delete().catch(() => {});
+    }
+
     if (message.content.startsWith('!background')) {
         const args = message.content.split(' ').slice(1);
         const suspectQuery = args.join(' ');
