@@ -30,11 +30,13 @@ const PERMANENT_CASE_ROLES = [
     "1527133378032177192"
 ];
 
+// Specific Role allowed to run purge
+const PURGE_AUTHORIZED_ROLE = "1527133378032177192";
+
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
     try {
-        // Create table if it doesn't exist
         await pool.query(`
             CREATE TABLE IF NOT EXISTS cid_records (
                 case_id SERIAL PRIMARY KEY,
@@ -50,7 +52,6 @@ client.once('ready', async () => {
             );
         `);
 
-        // Safety fallback: Add column if the table already existed without it
         await pool.query(`
             ALTER TABLE cid_records ADD COLUMN IF NOT EXISTS assigned_agent_id BIGINT;
         `);
@@ -72,7 +73,10 @@ client.once('ready', async () => {
                 option.setName('agent')
                     .setDescription('The agent to assign to this case')
                     .setRequired(true)
-            )
+            ),
+        new SlashCommandBuilder()
+            .setName('cidchannelpurge')
+            .setDescription('Deletes all current active CID case channels from database records')
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
@@ -130,6 +134,33 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: "CID panel deployed successfully.", ephemeral: true });
         }
 
+        if (commandName === 'cidchannelpurge') {
+            if (!member.roles.cache.has(PURGE_AUTHORIZED_ROLE) && !member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: "❌ You do not have permission to use this command.", ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            try {
+                const dbRes = await pool.query(`SELECT channel_id FROM cid_records`);
+                let deletedCount = 0;
+
+                for (const row of dbRes.rows) {
+                    const targetChannel = guild.channels.cache.get(String(row.channel_id));
+                    if (targetChannel) {
+                        await targetChannel.delete().catch(() => {});
+                        deletedCount++;
+                    }
+                }
+
+                await pool.query(`DELETE FROM cid_records`);
+                await interaction.editReply({ content: `✅ Purge complete. Deleted ${deletedCount} active case channel(s) and cleared database records.` });
+            } catch (err) {
+                console.error("Purge Error:", err);
+                await interaction.editReply({ content: `❌ An error occurred during the purge: \`${err.message}\`` });
+            }
+        }
+
         if (commandName === 'assign') {
             await interaction.deferReply({ ephemeral: true });
 
@@ -159,7 +190,9 @@ client.on('interactionCreate', async interaction => {
             try {
                 await channel.permissionOverwrites.set(overwrites);
                 await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [targetAgent.id, channel.id]);
-                await interaction.editReply({ content: `✅ Successfully assigned ${targetAgent} to this case and updated channel permissions.` });
+                
+                await interaction.editReply({ content: `✅ Successfully assigned ${targetAgent} to this case.` });
+                await channel.send(`🔔 Case Update: <@${complainantId}>, <@${targetAgent.id}> has been assigned to your case.`);
             } catch (err) {
                 console.error("Assign Error:", err);
                 await interaction.editReply({ content: `❌ Failed to update channel permissions: \`${err.message}\`` });
@@ -250,7 +283,9 @@ client.on('interactionCreate', async interaction => {
             try {
                 await channel.permissionOverwrites.set(overwrites);
                 await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [user.id, channel.id]);
+                
                 await interaction.editReply({ content: `🔒 Ticket successfully claimed by ${user}.` });
+                await channel.send(`🔔 Case Update: <@${complainantId}>, <@${user.id}> has claimed/been assigned to your case.`);
             } catch (err) {
                 console.error("Claim Error:", err);
                 await interaction.editReply({ content: `❌ Failed to claim ticket: \`${err.message}\`` });
