@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ChannelType, PermissionFlagsBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ChannelType, PermissionFlagsBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const { Pool } = require('pg');
 require('dotenv').config();
 
@@ -33,7 +33,6 @@ const PERMANENT_CASE_ROLES = [
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // Ensure database table exists
     try {
         await pool.query(`
             CREATE TABLE IF NOT EXISTS cid_records (
@@ -54,7 +53,6 @@ client.once('ready', async () => {
         console.error("Database initialization error:", err);
     }
 
-    // Register Slash Commands Globally
     const commands = [
         new SlashCommandBuilder()
             .setName('cidpanel')
@@ -78,14 +76,13 @@ client.once('ready', async () => {
     }
 });
 
-// Handle Slash Commands (/cidpanel and /assign)
+// Handle Slash Commands (/cidpanel and /assign) & Button Actions (Close Ticket)
 client.on('interactionCreate', async interaction => {
+    // 1. Handle Slash Commands
     if (interaction.isChatInputCommand()) {
         const { commandName, member, guild, channel } = interaction;
 
-        // 1. /cidpanel command
         if (commandName === 'cidpanel') {
-            // Check if user has one of the authorized roles
             const hasRole = AUTHORIZED_DEPLOY_ROLES.some(roleId => member.roles.cache.has(roleId));
             if (!hasRole && !member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: "You do not have permission to deploy the CID panel.", ephemeral: true });
@@ -122,11 +119,13 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: "CID panel deployed successfully.", ephemeral: true });
         }
 
-        // 2. /assign command
         if (commandName === 'assign') {
+            // Defer reply immediately so Discord doesn't timeout while processing
+            await interaction.deferReply();
+
             const dbCheck = await pool.query(`SELECT * FROM cid_records WHERE channel_id = $1`, [channel.id]);
             if (dbCheck.rows.length === 0) {
-                return interaction.reply({ content: "This command can only be used inside an active CID case channel.", ephemeral: true });
+                return interaction.editReply({ content: "This command can only be used inside an active CID case channel." });
             }
 
             const targetAgent = interaction.options.getUser('agent');
@@ -148,11 +147,11 @@ client.on('interactionCreate', async interaction => {
             await channel.edit({ permissionOverwrites: overwrites });
             await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [targetAgent.id, channel.id]);
 
-            await interaction.reply({ content: `Successfully assigned ${targetAgent} to this case and updated channel permissions.` });
+            await interaction.editReply({ content: `Successfully assigned ${targetAgent} to this case and updated channel permissions.` });
         }
     }
 
-    // Handle Dropdown Menu Selection (Ticket Creation)
+    // 2. Handle Ticket Dropdown Creation
     if (interaction.isStringSelectMenu() && interaction.customId === 'cid_ticket_select') {
         const ticketType = interaction.values[0];
         const guild = interaction.guild;
@@ -183,14 +182,32 @@ client.on('interactionCreate', async interaction => {
         );
         const caseId = insertRes.rows[0].case_id;
 
+        // Build Full Embed Message & Close Button
         const ticketEmbed = new EmbedBuilder()
             .setTitle(`CID Case File #${caseId} — ${ticketType.toUpperCase()}`)
-            .setDescription("Please state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo). Avoid downloadable or streamable clip links.")
+            .setDescription(`**Hey ${interaction.user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.**\n\nPlease state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo). Avoid downloadable or streamable clip links.`)
             .setColor(0x8B0000);
 
-        const welcomeText = `Hey ${interaction.user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.`;
-        await channel.send({ content: welcomeText, embeds: [ticketEmbed] });
+        const closeButtonRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('close_ticket_btn')
+                .setLabel('Close Ticket')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        await channel.send({ embeds: [ticketEmbed], components: [closeButtonRow] });
         await interaction.reply({ content: `Your ticket has been created: ${channel}`, ephemeral: true });
+    }
+
+    // 3. Handle Close Ticket Button Click
+    if (interaction.isButton() && interaction.customId === 'close_ticket_btn') {
+        await interaction.reply({ content: "Closing ticket and deleting channel...", ephemeral: true });
+        
+        // Remove record from database and delete channel
+        await pool.query(`DELETE FROM cid_records WHERE channel_id = $1`, [interaction.channel.id]);
+        setTimeout(async () => {
+            await interaction.channel.delete().catch(() => {});
+        }, 2000);
     }
 });
 
