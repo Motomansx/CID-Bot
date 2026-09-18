@@ -34,6 +34,7 @@ client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
     try {
+        // Create table if it doesn't exist
         await pool.query(`
             CREATE TABLE IF NOT EXISTS cid_records (
                 case_id SERIAL PRIMARY KEY,
@@ -48,7 +49,13 @@ client.once('ready', async () => {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        console.log("Database table 'cid_records' is ready.");
+
+        // Safety fallback: Add column if the table already existed without it
+        await pool.query(`
+            ALTER TABLE cid_records ADD COLUMN IF NOT EXISTS assigned_agent_id BIGINT;
+        `);
+
+        console.log("Database table 'cid_records' and columns are verified & ready.");
     } catch (err) {
         console.error("Database initialization error:", err);
     }
@@ -135,7 +142,6 @@ client.on('interactionCreate', async interaction => {
             const caseData = dbCheck.rows[0];
             const complainantId = String(caseData.complainant_id);
 
-            // Construct precise permission overwrites with explicit types (0 = Role, 1 = Member)
             let overwrites = [
                 { id: guild.id, type: 0, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: complainantId, type: 1, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
