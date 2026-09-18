@@ -76,9 +76,8 @@ client.once('ready', async () => {
     }
 });
 
-// Handle Slash Commands (/cidpanel and /assign) & Button Actions (Close Ticket)
+// Handle Slash Commands & Interactive Buttons
 client.on('interactionCreate', async interaction => {
-    // 1. Handle Slash Commands
     if (interaction.isChatInputCommand()) {
         const { commandName, member, guild, channel } = interaction;
 
@@ -120,7 +119,6 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (commandName === 'assign') {
-            // Defer reply immediately so Discord doesn't timeout while processing
             await interaction.deferReply();
 
             const dbCheck = await pool.query(`SELECT * FROM cid_records WHERE channel_id = $1`, [channel.id]);
@@ -151,7 +149,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // 2. Handle Ticket Dropdown Creation
+    // Handle Ticket Dropdown Creation
     if (interaction.isStringSelectMenu() && interaction.customId === 'cid_ticket_select') {
         const ticketType = interaction.values[0];
         const guild = interaction.guild;
@@ -182,32 +180,74 @@ client.on('interactionCreate', async interaction => {
         );
         const caseId = insertRes.rows[0].case_id;
 
-        // Build Full Embed Message & Close Button
         const ticketEmbed = new EmbedBuilder()
             .setTitle(`CID Case File #${caseId} — ${ticketType.toUpperCase()}`)
             .setDescription(`**Hey ${interaction.user}, thank you for making a CID ticket. A Supervisor / Special Agent in Charge will assign an agent to your case, please wait patiently.**\n\nPlease state your case, name the suspect, and provide accepted video/evidence links (YouTube, Medal, Gyazo). Avoid downloadable or streamable clip links.`)
             .setColor(0x8B0000);
 
-        const closeButtonRow = new ActionRowBuilder().addComponents(
+        // Control buttons inside ticket: Claim, Close, Close Without Reason
+        const controlRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('claim_ticket_btn')
+                .setLabel('Claim Ticket')
+                .setStyle(ButtonStyle.Primary),
             new ButtonBuilder()
                 .setCustomId('close_ticket_btn')
                 .setLabel('Close Ticket')
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId('close_noreason_btn')
+                .setLabel('Close Without Reason')
                 .setStyle(ButtonStyle.Danger)
         );
 
-        await channel.send({ embeds: [ticketEmbed], components: [closeButtonRow] });
+        await channel.send({ embeds: [ticketEmbed], components: [controlRow] });
         await interaction.reply({ content: `Your ticket has been created: ${channel}`, ephemeral: true });
     }
 
-    // 3. Handle Close Ticket Button Click
-    if (interaction.isButton() && interaction.customId === 'close_ticket_btn') {
-        await interaction.reply({ content: "Closing ticket and deleting channel...", ephemeral: true });
-        
-        // Remove record from database and delete channel
-        await pool.query(`DELETE FROM cid_records WHERE channel_id = $1`, [interaction.channel.id]);
-        setTimeout(async () => {
-            await interaction.channel.delete().catch(() => {});
-        }, 2000);
+    // Handle Ticket Action Buttons (Claim, Close, Close Without Reason)
+    if (interaction.isButton()) {
+        const { customId, channel, user, guild } = interaction;
+
+        if (customId === 'claim_ticket_btn') {
+            await interaction.deferReply();
+            
+            // Update DB with assigned agent
+            await pool.query(`UPDATE cid_records SET assigned_agent_id = $1 WHERE channel_id = $2`, [user.id, channel.id]);
+
+            // Update channel permissions to include the claiming user
+            let dbCheck = await pool.query(`SELECT complainant_id FROM cid_records WHERE channel_id = $1`, [channel.id]);
+            if (dbCheck.rows.length > 0) {
+                const complainantId = dbCheck.rows[0].complainant_id;
+                let overwrites = [
+                    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                    { id: complainantId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                    { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                ];
+                PERMANENT_CASE_ROLES.forEach(roleId => {
+                    overwrites.push({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+                });
+                await channel.edit({ permissionOverwrites: overwrites });
+            }
+
+            await interaction.editReply({ content: `🔒 Ticket successfully claimed by ${user}.` });
+        }
+
+        if (customId === 'close_ticket_btn') {
+            await interaction.reply({ content: "Closing case file and archiving...", ephemeral: true });
+            await pool.query(`DELETE FROM cid_records WHERE channel_id = $1`, [channel.id]);
+            setTimeout(async () => {
+                await channel.delete().catch(() => {});
+            }, 2000);
+        }
+
+        if (customId === 'close_noreason_btn') {
+            await interaction.reply({ content: "Closing ticket without reason...", ephemeral: true });
+            await pool.query(`DELETE FROM cid_records WHERE channel_id = $1`, [channel.id]);
+            setTimeout(async () => {
+                await channel.delete().catch(() => {});
+            }, 1000);
+        }
     }
 });
 
